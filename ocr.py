@@ -196,9 +196,10 @@ def _read_number(im, yr):
                     for v, w in c:
                         tally[v] += w
     if not tally:
-        return None, 0, 0
+        return None, 0, 0, ""
     val, n = tally.most_common(1)[0]
-    return val, round(n, 1), runs
+    top = ", ".join(f"{k}:{round(v, 1)}" for k, v in tally.most_common(4))
+    return val, round(n, 1), runs, top
 
 
 def _read_state(im, road_y):
@@ -218,9 +219,9 @@ def ocr(path):
     lines = _find_lines(im)
     ya = lines.get("air") or FALLBACK["air"]
     yr = lines.get("road") or FALLBACK["road"]
-    air, na, ta = _read_number(im, ya)
-    road, nr, tr = _read_number(im, yr)
-    info = [f"lines={lines}", f"air {na}/{ta} road {nr}/{tr}"]
+    air, na, ta, topa = _read_number(im, ya)
+    road, nr, tr, topr = _read_number(im, yr)
+    info = [f"size={im.size}", f"lines={lines}", f"air {na}/{ta} [{topa}]", f"road {nr}/{tr} [{topr}]"]
     # 같은 값으로 읽힌 비율이 낮으면(자신 없음) 값을 쓰지 않는다
     if air is None or road is None or na < 0.3 * ta or nr < 0.3 * tr or ta < 5 or tr < 5:
         info.append("신뢰도 낮음 → 값 사용 안 함")
@@ -240,7 +241,14 @@ def work(cam):
         m = re.search(r"_(\d{8})\.(\d{4})\d{2}\.", url)
         tm = (m.group(1) + m.group(2)) if m else ""
         with tempfile.NamedTemporaryFile(suffix=".jpg") as f:
-            f.write(get(url, binary=True)); f.flush()
+            data = get(url, binary=True)
+            f.write(data); f.flush()
+            try:
+                os.makedirs("data", exist_ok=True)
+                with open("data/" + cam["cctv"] + ".jpg", "wb") as g:
+                    g.write(data)
+            except Exception:
+                pass
             res, raws = ocr(f.name)
         print(cam["name"], tm, res, raws, flush=True)
         if res:
