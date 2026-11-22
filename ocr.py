@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """로드플러스 CCTV 사진 왼쪽 위의 '대기 / 노면' 글자를 읽어 data/cctv.json 으로 저장."""
-import json, os, re, subprocess, sys, tempfile, urllib.request, datetime
+import json, os, re, subprocess, sys, tempfile, time, urllib.error, urllib.request, datetime
 from collections import Counter
 from PIL import Image, ImageOps
 
 # 이름은 웹앱(worker.js)의 지점 이름과 똑같이 써야 합니다.
 CAMS = [
-    {"name": "논공휴게소", "cctv": "cctv00003534"},
-    {"name": "거창휴게소", "cctv": "cctv00005776"},
+    # img_id: 사진 주소 가운데의 카메라별 고정 값 (API가 안 열릴 때 직접 주소를 만드는 데 사용)
+    {"name": "논공휴게소", "cctv": "cctv00003534", "img_id": "n6pQWvRdaX5tJPupDGM1m3AqrHy2_iGo8RYil2IfesM"},
+    {"name": "거창휴게소", "cctv": "cctv00005776", "img_id": "aFoZkD6yCUDcOqjZrvVzBL0vFko_5i_inMhrxlgYD3Y"},
 ]
 API = "https://www.roadplus.co.kr/api/main/selectCctvInfoAjax?cctvId={id}&driveDrctCd={d}"
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
@@ -17,16 +18,21 @@ BOX = (0.0, 0.20, 0.30, 0.50)
 THRESHOLDS = (190, 210, 230)
 
 
-def get(url, binary=False):
+def get(url, binary=False, timeout=40, tries=3):
     last = None
-    for _ in range(3):
+    for i in range(tries):
         try:
             req = urllib.request.Request(url, headers=UA)
-            with urllib.request.urlopen(req, timeout=20) as r:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
                 b = r.read()
             return b if binary else b.decode("utf-8", "replace")
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                raise
+            last = e
         except Exception as e:  # noqa
             last = e
+        time.sleep(2 * (i + 1))
     raise last
 
 
@@ -62,6 +68,22 @@ def _val(m):
     except ValueError:
         return None, False
     return (-v if neg else v), dot
+
+
+def guess_image(cam):
+    """API가 안 될 때: 카메라 고정 ID + 최근 분(KST)으로 사진 주소를 직접 만들어 시도."""
+    num = int(re.sub(r"\D", "", cam["cctv"]))
+    now = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=9)
+    for back in range(1, 9):
+        t = (now - datetime.timedelta(minutes=back)).strftime("%Y%m%d.%H%M")
+        for host in ("exmobile4", "exmobile3", "exmobile5", "exmobile2", "exmobile1"):
+            url = f"https://{host}.hscdn.com/cctv{num}image/{cam['img_id']}_{t}00.000.jpg"
+            try:
+                get(url, binary=True, timeout=15, tries=1)
+                return url
+            except Exception:
+                continue
+    return None
 
 
 def parse(t):
@@ -180,6 +202,9 @@ def main():
     for cam in CAMS:
         try:
             url = find_image(cam["cctv"])
+            if not url and cam.get("img_id"):
+                print("API 실패 → 주소 직접 생성", cam["name"])
+                url = guess_image(cam)
             if not url:
                 print("no image", cam["name"]); continue
             m = re.search(r"_(\d{8})\.(\d{4})\d{2}\.", url)
