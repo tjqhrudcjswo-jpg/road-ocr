@@ -42,38 +42,137 @@ def find_image(cctv):
     return None
 
 
+def _val(m):
+    """숫자 글자를 값으로. 표시는 항상 소수 한 자리(예: 2.8). 점이 사라지거나 다른 숫자로 읽힌 경우도 복원."""
+    if not m:
+        return None, False
+    s = m.group(1).replace(" ", "")
+    neg = s.startswith("-")
+    d = s.lstrip("-")
+    dot = "." in d
+    try:
+        if dot:
+            v = float(d)
+        elif len(d) == 2:
+            v = int(d) / 10.0
+        elif len(d) == 3:           # 점이 숫자로 잘못 읽힘: 첫 자리 . 끝 자리
+            v = float(d[0] + "." + d[2])
+        else:
+            return None, False
+    except ValueError:
+        return None, False
+    return (-v if neg else v), dot
+
+
 def parse(t):
     t = t.replace("−", "-").replace("–", "-").replace("—", "-").replace("~", "-")
-    num = r"(-?\s*\d{1,2}(?:\.\d)?)"
+    num = r"(-?\s?\d+(?:\.\d+)?)"
     a = re.search(r"대\s*기\s*" + num, t)
     r = re.search(r"노\s*면\s*" + num, t)
     st = re.findall(r"노\s*면\s+([가-힣]{1,4})", t)
-    f = lambda m: float(m.group(1).replace(" ", "")) if m else None
-    return f(a), f(r), (st[-1] if st else None)
+    av, ad = _val(a)
+    rv, rd = _val(r)
+    return av, rv, (st[-1] if st else None), ad, rd
+
+
+def _run(img, lang, psm):
+    with tempfile.NamedTemporaryFile(suffix=".png") as f:
+        img.save(f.name)
+        return subprocess.run(["tesseract", f.name, "-", "-l", lang, "--psm", str(psm)],
+                              capture_output=True, text=True).stdout
+
+
+def _prep(im, box, th, target=400):
+    w, h = im.size
+    c = im.crop((int(w * box[0]), int(h * box[1]), int(w * box[2]), int(h * box[3])))
+    sc = max(3, round(target / max(1, c.height)))
+    c = c.resize((c.width * sc, c.height * sc), Image.LANCZOS)
+    return ImageOps.invert(c.point(lambda p: 255 if p > th else 0))
+
+
+def _find_lines(im):
+    """왼쪽 위 글자 영역에서 '대기' 줄과 '노면' 줄의 세로 위치(사진 비율)를 찾는다."""
+    w, h = im.size
+    box = (0.0, 0.16, 0.20, 0.50)
+    found = {}
+    for th in (190, 170, 210):
+        img = _prep(im, box, th, 500)
+        with tempfile.NamedTemporaryFile(suffix=".png") as f:
+            img.save(f.name)
+            tsv = subprocess.run(["tesseract", f.name, "-", "-l", "kor", "--psm", "6", "tsv"],
+                                 capture_output=True, text=True).stdout
+        lines = {}
+        for row in tsv.splitlines()[1:]:
+            c = row.split("\t")
+            if len(c) < 12 or c[0] != "5" or not c[11].strip():
+                continue
+            key = (c[2], c[3], c[4])
+            top, hh = int(c[7]), int(c[9])
+            L = lines.setdefault(key, {"t": top, "b": top + hh, "txt": ""})
+            L["t"], L["b"] = min(L["t"], top), max(L["b"], top + hh)
+            L["txt"] += c[11] + " "
+        ordered = sorted(lines.values(), key=lambda x: x["t"])
+        for L in ordered:
+            y0 = box[1] + L["t"] / img.height * (box[3] - box[1])
+            y1 = box[1] + L["b"] / img.height * (box[3] - box[1])
+            if "air" not in found and re.search(r"대|기", L["txt"]):
+                found["air"] = (y0, y1)
+            elif "road" not in found and re.search(r"노|면", L["txt"]) and re.search(r"\d", L["txt"]):
+                found["road"] = (y0, y1)
+        if "air" in found and "road" in found:
+            break
+    return found
+
+
+NUM_X = (0.083, 0.150)
+FALLBACK = {"air": (0.226, 0.282), "road": (0.288, 0.346)}
+
+
+def _read_number(im, yr):
+    votes = []
+    h = im.size[1]
+    pad = 0.004
+    for dy in (0.0, -0.004, 0.004):
+        for x0, x1 in ((NUM_X[0], NUM_X[1]), (NUM_X[0] - 0.006, NUM_X[1] + 0.006), (NUM_X[0] + 0.004, NUM_X[1] - 0.004)):
+            for th in (190, 205, 220, 235):
+                img = ImageOps.expand(_prep(im, (x0, yr[0] - pad + dy, x1, yr[1] + pad + dy), th, 240), border=40, fill=255)
+                for psm in (7, 8):
+                    with tempfile.NamedTemporaryFile(suffix=".png") as f:
+                        img.save(f.name)
+                        raw = subprocess.run(["tesseract", f.name, "-", "-l", "eng", "--psm", str(psm),
+                                              "-c", "tessedit_char_whitelist=0123456789.-"],
+                                             capture_output=True, text=True).stdout.replace(" ", "").strip()
+                    m = re.search(r"(-?\d+(?:\.\d+)?)", raw)
+                    v, dot = _val(m)
+                    if v is not None and -40 <= v <= 60:
+                        votes.append((v, dot))
+    if not votes:
+        return None, 0, 0
+    good = [v for v, d in votes if d] or [v for v, d in votes]
+    val, n = Counter(good).most_common(1)[0]
+    return val, n, len(votes)
+
+
+def _read_state(im):
+    for th in (190, 210, 230):
+        t = _run(_prep(im, (0.0, 0.34, 0.26, 0.42), th, 200), "kor", 7)
+        m = re.search(r"노\s*면\s*([가-힣]{1,4})", t)
+        if m:
+            return m.group(1)
+    return None
 
 
 def ocr(path):
     im = Image.open(path).convert("L")
-    w, h = im.size
-    c = im.crop((int(w * BOX[0]), int(h * BOX[1]), int(w * BOX[2]), int(h * BOX[3])))
-    scale = max(2, round(400 / c.height))
-    c = c.resize((c.width * scale, c.height * scale), Image.LANCZOS)
-    votes, raws = [], []
-    for th in THRESHOLDS:
-        b = ImageOps.invert(c.point(lambda p, th=th: 255 if p > th else 0))
-        with tempfile.NamedTemporaryFile(suffix=".png") as f:
-            b.save(f.name)
-            out = subprocess.run(["tesseract", f.name, "-", "-l", "kor", "--psm", "6"],
-                                 capture_output=True, text=True).stdout
-        raws.append(out.strip().replace("\n", " | "))
-        air, road, st = parse(out)
-        if air is not None and road is not None and -40 <= air <= 50 and -40 <= road <= 60:
-            votes.append((air, road, st))
-    if not votes:
-        return None, raws
-    (air, road), _ = Counter((a, r) for a, r, _ in votes).most_common(1)[0]
-    st = next((s for a, r, s in votes if (a, r) == (air, road) and s), None)
-    return {"air": air, "road": road, "state": st}, raws
+    lines = _find_lines(im)
+    ya = lines.get("air") or FALLBACK["air"]
+    yr = lines.get("road") or FALLBACK["road"]
+    air, na, ta = _read_number(im, ya)
+    road, nr, tr = _read_number(im, yr)
+    info = [f"lines={lines}", f"air {na}/{ta} road {nr}/{tr}"]
+    if air is None or road is None:
+        return None, info
+    return {"air": air, "road": road, "state": _read_state(im), "votes": f"{na}/{ta},{nr}/{tr}"}, info
 
 
 def main():
@@ -90,13 +189,13 @@ def main():
                 res, raws = ocr(f.name)
             print(cam["name"], tm, res, raws)
             if res:
-                res.update({"img_tm": tm, "raw": raws[1] if len(raws) > 1 else raws[0]})
+                res.update({"img_tm": tm, "raw": " ; ".join(raws)})
                 out[cam["name"]] = res
         except Exception as e:  # noqa
             print("fail", cam["name"], e, file=sys.stderr)
     os.makedirs("data", exist_ok=True)
     with open("data/cctv.json", "w", encoding="utf-8") as fp:
-        json.dump({"updated": datetime.datetime.utcnow().isoformat() + "Z", "cams": out}, fp, ensure_ascii=False)
+        json.dump({"updated": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "cams": out}, fp, ensure_ascii=False)
 
 
 if __name__ == "__main__":
