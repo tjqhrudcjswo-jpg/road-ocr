@@ -91,6 +91,28 @@ def guess_image(cam):
     return None
 
 
+def _cands(raw):
+    """읽힌 글자에서 (값, 가중치) 후보를 만든다. 표시는 항상 소수 한 자리(X.Y).
+    - 점이 있으면 소수 첫째 자리까지만(뒤에 붙은 잡글자 제거)
+    - 점이 없고 3자리면: 점이 숫자로 읽힌 경우(X?Y)와 뒤에 잡글자가 붙은 경우(XY?) 둘 다 반반"""
+    m = re.search(r"(-?)\s?(\d+)(?:\.(\d+))?", raw)
+    if not m:
+        return []
+    neg, ip, fp = m.group(1) == "-", m.group(2), m.group(3)
+    sg = -1 if neg else 1
+    out = []
+    if fp is not None:
+        if len(ip) <= 2:
+            out.append((sg * float(ip + "." + fp[0]), 1.0))
+    else:
+        if len(ip) == 2:
+            out.append((sg * int(ip) / 10.0, 1.0))
+        elif len(ip) == 3:
+            out.append((sg * float(ip[0] + "." + ip[2]), 0.5))
+            out.append((sg * float(ip[0] + "." + ip[1]), 0.5))
+    return [(v, w) for v, w in out if -40 <= v <= 60]
+
+
 def parse(t):
     t = t.replace("−", "-").replace("–", "-").replace("—", "-").replace("~", "-")
     num = r"(-?\s?\d+(?:\.\d+)?)"
@@ -156,12 +178,12 @@ FALLBACK = {"air": (0.226, 0.282), "road": (0.288, 0.346)}
 
 
 def _read_number(im, yr):
-    votes = []
-    h = im.size[1]
+    tally = Counter()
+    runs = 0
     pad = 0.004
     for dy in (0.0, -0.004, 0.004):
-        for x0, x1 in ((NUM_X[0], NUM_X[1]), (NUM_X[0] - 0.006, NUM_X[1] + 0.006), (NUM_X[0] + 0.004, NUM_X[1] - 0.004)):
-            for th in (190, 205, 220, 235):
+        for x0, x1 in ((NUM_X[0], NUM_X[1]), (NUM_X[0] - 0.006, NUM_X[1] + 0.006), (NUM_X[0] - 0.012, NUM_X[1] + 0.006), (NUM_X[0] + 0.004, NUM_X[1] - 0.004)):
+            for th in (150, 170, 190, 205, 220, 235):
                 img = ImageOps.expand(_prep(im, (x0, yr[0] - pad + dy, x1, yr[1] + pad + dy), th, 240), border=40, fill=255)
                 for psm in (7, 8):
                     with tempfile.NamedTemporaryFile(suffix=".png") as f:
@@ -169,23 +191,26 @@ def _read_number(im, yr):
                         raw = subprocess.run(["tesseract", f.name, "-", "-l", "eng", "--psm", str(psm),
                                               "-c", "tessedit_char_whitelist=0123456789.-"],
                                              capture_output=True, text=True).stdout.replace(" ", "").strip()
-                    m = re.search(r"(-?\d+(?:\.\d+)?)", raw)
-                    v, dot = _val(m)
-                    if v is not None and -40 <= v <= 60:
-                        votes.append((v, dot))
-    if not votes:
+                    c = _cands(raw)
+                    if c:
+                        runs += 1
+                        for v, w in c:
+                            tally[v] += w
+    if not tally:
         return None, 0, 0
-    good = [v for v, d in votes if d] or [v for v, d in votes]
-    val, n = Counter(good).most_common(1)[0]
-    return val, n, len(votes)
+    val, n = tally.most_common(1)[0]
+    return val, round(n, 1), runs
 
 
-def _read_state(im):
-    for th in (190, 210, 230):
-        t = _run(_prep(im, (0.0, 0.34, 0.26, 0.42), th, 200), "kor", 7)
-        m = re.search(r"노\s*면\s*([가-힣]{1,4})", t)
-        if m:
-            return m.group(1)
+def _read_state(im, road_y):
+    """노면 줄 바로 아래 줄('노면 마름')에서 상태 글자를 읽는다."""
+    for dy in (0.0, 0.01, -0.01):
+        for th in (190, 210, 170, 230):
+            box = (0.0, road_y[1] + dy - 0.004, 0.30, road_y[1] + dy + 0.075)
+            t = _run(_prep(im, box, th, 220), "kor", 6)
+            m = re.search(r"노\s*면\s*([가-힣]{1,4})", t)
+            if m:
+                return m.group(1)
     return None
 
 
@@ -197,9 +222,11 @@ def ocr(path):
     air, na, ta = _read_number(im, ya)
     road, nr, tr = _read_number(im, yr)
     info = [f"lines={lines}", f"air {na}/{ta} road {nr}/{tr}"]
-    if air is None or road is None:
+    # 같은 값으로 읽힌 비율이 낮으면(자신 없음) 값을 쓰지 않는다
+    if air is None or road is None or na < 0.3 * ta or nr < 0.3 * tr or ta < 8 or tr < 8:
+        info.append("신뢰도 낮음 → 값 사용 안 함")
         return None, info
-    return {"air": air, "road": road, "state": _read_state(im), "votes": f"{na}/{ta},{nr}/{tr}"}, info
+    return {"air": air, "road": road, "state": _read_state(im, yr), "votes": f"{na}/{ta},{nr}/{tr}"}, info
 
 
 def work(cam):
