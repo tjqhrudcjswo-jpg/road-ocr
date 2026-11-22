@@ -7,11 +7,11 @@ permissions:
   contents: write
 concurrency:
   group: cctv-ocr
-  cancel-in-progress: true
+  cancel-in-progress: false
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
       - name: 설치
