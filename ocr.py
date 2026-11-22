@@ -9,6 +9,7 @@ CAMS = [
     # img_id: 사진 주소 가운데의 카메라별 고정 값 (API가 안 열릴 때 직접 주소를 만드는 데 사용)
     {"name": "논공휴게소", "cctv": "cctv00003534", "img_id": "n6pQWvRdaX5tJPupDGM1m3AqrHy2_iGo8RYil2IfesM"},
     {"name": "거창휴게소", "cctv": "cctv00005776", "img_id": "aFoZkD6yCUDcOqjZrvVzBL0vFko_5i_inMhrxlgYD3Y"},
+    {"name": "함양IC", "cctv": "cctv00005750", "img_id": "xXYxoYM_dxqPriv_e9UdQggHDPw9aKmPJi7xjOiSvdI"},
 ]
 API = "https://www.roadplus.co.kr/api/main/selectCctvInfoAjax?cctvId={id}&driveDrctCd={d}"
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
