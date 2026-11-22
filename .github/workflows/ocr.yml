@@ -23,12 +23,12 @@ jobs:
         run: python3 ocr.py
       - name: data 브랜치에 올리기
         run: |
-          cp data/cctv.json /tmp/cctv.json
+          mkdir -p /tmp/out && cp data/* /tmp/out/
           git config user.name "github-actions"
           git config user.email "actions@users.noreply.github.com"
           git checkout --orphan data
           git rm -rf . -q
-          mkdir -p . && cp /tmp/cctv.json cctv.json
-          git add cctv.json
+          cp /tmp/out/* .
+          git add -A
           git commit -q -m "cctv $(date -u +%FT%TZ)"
           git push -f origin data
