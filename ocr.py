@@ -184,7 +184,7 @@ def _read_number(im, yr):
     runs = 0
     pad = 0.004
     for dy in (0.0, -0.004, 0.004):
-        for x0, x1 in ((NUM_X[0], NUM_X[1]), (NUM_X[0] - 0.010, NUM_X[1] + 0.006), (NUM_X[0] + 0.004, NUM_X[1] - 0.004)):
+        for x0, x1 in ((NUM_X[0], NUM_X[1]), (NUM_X[0] - 0.010, NUM_X[1] + 0.010), (NUM_X[0], NUM_X[1] + 0.022), (NUM_X[0] + 0.010, NUM_X[1] + 0.016)):
             for th in (170, 195, 220):
                 img = ImageOps.expand(_prep(im, (x0, yr[0] - pad + dy, x1, yr[1] + pad + dy), th, 200), border=40, fill=255)
                 with tempfile.NamedTemporaryFile(suffix=".png") as f:
@@ -207,16 +207,24 @@ def _read_number(im, yr):
     return val, round(n, 1), runs, top
 
 
+STATES = ("마름", "젖음", "습윤", "습기", "결빙", "적설", "슬러시", "서리", "눈")
+
+
 def _read_state(im, road_y):
-    """노면 줄 바로 아래 줄('노면 마름')에서 상태 글자를 읽는다."""
-    for dy in (0.0, 0.01):
-        for th in (190, 210):
+    """노면 줄 아래 줄('노면 마름')에서 상태 글자를 읽는다. 아는 단어만 인정하고 여러 번 읽어 다수결."""
+    c = Counter()
+    for dy in (0.0, 0.01, 0.02):
+        for th in (170, 190, 210, 230):
             box = (0.0, road_y[1] + dy - 0.004, 0.30, road_y[1] + dy + 0.075)
             t = _run(_prep(im, box, th, 220), "kor", 6)
-            m = re.search(r"노\s*면\s*([가-힣]{1,4})", t)
-            if m:
-                return m.group(1)
-    return None
+            for m in re.finditer(r"[노도누고][면먼변]\s*([가-힣]{1,4})", t):
+                w = m.group(1)
+                for k in STATES:
+                    if w.startswith(k):
+                        c[k] += 1
+        if sum(c.values()) >= 3:
+            break
+    return c.most_common(1)[0][0] if c else None
 
 
 def ocr(path):
