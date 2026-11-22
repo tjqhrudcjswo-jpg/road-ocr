@@ -18,7 +18,7 @@ BOX = (0.0, 0.20, 0.30, 0.50)
 THRESHOLDS = (190, 210, 230)
 
 
-DEADLINE = time.time() + 120  # 전체 접속 시간 상한(초). 넘으면 더 기다리지 않고 포기
+DEADLINE = time.time() + 90  # 전체 접속 시간 상한(초). 넘으면 더 기다리지 않고 포기
 
 
 def get(url, binary=False, timeout=15, tries=2):
@@ -182,20 +182,19 @@ def _read_number(im, yr):
     runs = 0
     pad = 0.004
     for dy in (0.0, -0.004, 0.004):
-        for x0, x1 in ((NUM_X[0], NUM_X[1]), (NUM_X[0] - 0.006, NUM_X[1] + 0.006), (NUM_X[0] - 0.012, NUM_X[1] + 0.006), (NUM_X[0] + 0.004, NUM_X[1] - 0.004)):
-            for th in (150, 170, 190, 205, 220, 235):
-                img = ImageOps.expand(_prep(im, (x0, yr[0] - pad + dy, x1, yr[1] + pad + dy), th, 240), border=40, fill=255)
-                for psm in (7, 8):
-                    with tempfile.NamedTemporaryFile(suffix=".png") as f:
-                        img.save(f.name)
-                        raw = subprocess.run(["tesseract", f.name, "-", "-l", "eng", "--psm", str(psm),
-                                              "-c", "tessedit_char_whitelist=0123456789.-"],
-                                             capture_output=True, text=True).stdout.replace(" ", "").strip()
-                    c = _cands(raw)
-                    if c:
-                        runs += 1
-                        for v, w in c:
-                            tally[v] += w
+        for x0, x1 in ((NUM_X[0], NUM_X[1]), (NUM_X[0] - 0.010, NUM_X[1] + 0.006), (NUM_X[0] + 0.004, NUM_X[1] - 0.004)):
+            for th in (170, 195, 220):
+                img = ImageOps.expand(_prep(im, (x0, yr[0] - pad + dy, x1, yr[1] + pad + dy), th, 200), border=40, fill=255)
+                with tempfile.NamedTemporaryFile(suffix=".png") as f:
+                    img.save(f.name)
+                    raw = subprocess.run(["tesseract", f.name, "-", "-l", "eng", "--psm", "7",
+                                          "-c", "tessedit_char_whitelist=0123456789.-"],
+                                         capture_output=True, text=True).stdout.replace(" ", "").strip()
+                c = _cands(raw)
+                if c:
+                    runs += 1
+                    for v, w in c:
+                        tally[v] += w
     if not tally:
         return None, 0, 0
     val, n = tally.most_common(1)[0]
@@ -204,8 +203,8 @@ def _read_number(im, yr):
 
 def _read_state(im, road_y):
     """노면 줄 바로 아래 줄('노면 마름')에서 상태 글자를 읽는다."""
-    for dy in (0.0, 0.01, -0.01):
-        for th in (190, 210, 170, 230):
+    for dy in (0.0, 0.01):
+        for th in (190, 210):
             box = (0.0, road_y[1] + dy - 0.004, 0.30, road_y[1] + dy + 0.075)
             t = _run(_prep(im, box, th, 220), "kor", 6)
             m = re.search(r"노\s*면\s*([가-힣]{1,4})", t)
@@ -223,7 +222,7 @@ def ocr(path):
     road, nr, tr = _read_number(im, yr)
     info = [f"lines={lines}", f"air {na}/{ta} road {nr}/{tr}"]
     # 같은 값으로 읽힌 비율이 낮으면(자신 없음) 값을 쓰지 않는다
-    if air is None or road is None or na < 0.3 * ta or nr < 0.3 * tr or ta < 8 or tr < 8:
+    if air is None or road is None or na < 0.3 * ta or nr < 0.3 * tr or ta < 5 or tr < 5:
         info.append("신뢰도 낮음 → 값 사용 안 함")
         return None, info
     return {"air": air, "road": road, "state": _read_state(im, yr), "votes": f"{na}/{ta},{nr}/{tr}"}, info
