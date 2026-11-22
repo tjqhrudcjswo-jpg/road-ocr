@@ -236,9 +236,14 @@ def ocr(path):
     road, nr, tr, topr = _read_number(im, yr)
     info = [f"size={im.size}", f"lines={lines}", f"air {na}/{ta} [{topa}]", f"road {nr}/{tr} [{topr}]"]
     # 같은 값으로 읽힌 비율이 낮으면(자신 없음) 값을 쓰지 않는다
-    if air is None or road is None or na < 0.3 * ta or nr < 0.3 * tr or ta < 5 or tr < 5:
-        info.append("신뢰도 낮음 → 값 사용 안 함")
+    ok_a = air is not None and na >= 0.3 * ta and ta >= 5
+    ok_r = road is not None and nr >= 0.3 * tr and tr >= 5
+    if not ok_r:
+        info.append("노면 신뢰도 낮음 → 값 사용 안 함")
         return None, info
+    if not ok_a:
+        info.append("대기 신뢰도 낮음 → 대기는 기상청 값 사용, 노면만 사용")
+        air = None
     return {"air": air, "road": road, "state": _read_state(im, yr), "votes": f"{na}/{ta},{nr}/{tr}"}, info
 
 
