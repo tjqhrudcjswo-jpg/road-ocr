@@ -178,7 +178,9 @@ FALLBACK = {"air": (0.226, 0.282), "road": (0.288, 0.346)}
 
 
 def _read_number(im, yr):
-    tally = Counter()
+    """숫자 크기는 '-'를 무시하고 다수결, 부호는 '-'가 일부(25% 이상)라도 읽히면 영하로 판단.
+    (영하 '-'는 작아서 자주 놓치지만, 없는 '-'가 생기는 일은 드물다)"""
+    mag, neg = Counter(), Counter()
     runs = 0
     pad = 0.004
     for dy in (0.0, -0.004, 0.004):
@@ -194,11 +196,14 @@ def _read_number(im, yr):
                 if c:
                     runs += 1
                     for v, w in c:
-                        tally[v] += w
-    if not tally:
+                        mag[abs(v)] += w
+                        if v < 0:
+                            neg[abs(v)] += w
+    if not mag:
         return None, 0, 0, ""
-    val, n = tally.most_common(1)[0]
-    top = ", ".join(f"{k}:{round(v, 1)}" for k, v in tally.most_common(4))
+    m, n = mag.most_common(1)[0]
+    val = -m if neg[m] >= 0.25 * mag[m] else m
+    top = ", ".join(f"{k}:{round(v, 1)}(-{round(neg[k], 1)})" for k, v in mag.most_common(4))
     return val, round(n, 1), runs, top
 
 
