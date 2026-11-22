@@ -18,9 +18,14 @@ BOX = (0.0, 0.20, 0.30, 0.50)
 THRESHOLDS = (190, 210, 230)
 
 
-def get(url, binary=False, timeout=40, tries=3):
+DEADLINE = time.time() + 120  # 전체 접속 시간 상한(초). 넘으면 더 기다리지 않고 포기
+
+
+def get(url, binary=False, timeout=15, tries=2):
     last = None
     for i in range(tries):
+        if time.time() > DEADLINE:
+            raise TimeoutError("전체 시간 초과")
         try:
             req = urllib.request.Request(url, headers=UA)
             with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -32,7 +37,7 @@ def get(url, binary=False, timeout=40, tries=3):
             last = e
         except Exception as e:  # noqa
             last = e
-        time.sleep(2 * (i + 1))
+        time.sleep(1)
     raise last
 
 
@@ -74,12 +79,12 @@ def guess_image(cam):
     """API가 안 될 때: 카메라 고정 ID + 최근 분(KST)으로 사진 주소를 직접 만들어 시도."""
     num = int(re.sub(r"\D", "", cam["cctv"]))
     now = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=9)
-    for back in range(1, 9):
+    for back in range(1, 6):
         t = (now - datetime.timedelta(minutes=back)).strftime("%Y%m%d.%H%M")
-        for host in ("exmobile4", "exmobile3", "exmobile5", "exmobile2", "exmobile1"):
+        for host in ("exmobile4", "exmobile3"):
             url = f"https://{host}.hscdn.com/cctv{num}image/{cam['img_id']}_{t}00.000.jpg"
             try:
-                get(url, binary=True, timeout=15, tries=1)
+                get(url, binary=True, timeout=8, tries=1)
                 return url
             except Exception:
                 continue
@@ -197,27 +202,34 @@ def ocr(path):
     return {"air": air, "road": road, "state": _read_state(im), "votes": f"{na}/{ta},{nr}/{tr}"}, info
 
 
+def work(cam):
+    try:
+        url = find_image(cam["cctv"])
+        if not url and cam.get("img_id"):
+            print("API 실패 → 주소 직접 생성", cam["name"], flush=True)
+            url = guess_image(cam)
+        if not url:
+            print("no image", cam["name"], flush=True)
+            return cam["name"], None
+        m = re.search(r"_(\d{8})\.(\d{4})\d{2}\.", url)
+        tm = (m.group(1) + m.group(2)) if m else ""
+        with tempfile.NamedTemporaryFile(suffix=".jpg") as f:
+            f.write(get(url, binary=True)); f.flush()
+            res, raws = ocr(f.name)
+        print(cam["name"], tm, res, raws, flush=True)
+        if res:
+            res.update({"img_tm": tm, "raw": " ; ".join(raws)})
+        return cam["name"], res
+    except Exception as e:  # noqa
+        print("fail", cam["name"], e, file=sys.stderr, flush=True)
+        return cam["name"], None
+
+
 def main():
-    out = {}
-    for cam in CAMS:
-        try:
-            url = find_image(cam["cctv"])
-            if not url and cam.get("img_id"):
-                print("API 실패 → 주소 직접 생성", cam["name"])
-                url = guess_image(cam)
-            if not url:
-                print("no image", cam["name"]); continue
-            m = re.search(r"_(\d{8})\.(\d{4})\d{2}\.", url)
-            tm = (m.group(1) + m.group(2)) if m else ""
-            with tempfile.NamedTemporaryFile(suffix=".jpg") as f:
-                f.write(get(url, binary=True)); f.flush()
-                res, raws = ocr(f.name)
-            print(cam["name"], tm, res, raws)
-            if res:
-                res.update({"img_tm": tm, "raw": " ; ".join(raws)})
-                out[cam["name"]] = res
-        except Exception as e:  # noqa
-            print("fail", cam["name"], e, file=sys.stderr)
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=len(CAMS)) as ex:
+        results = list(ex.map(work, CAMS))
+    out = {n: r for n, r in results if r}
     os.makedirs("data", exist_ok=True)
     with open("data/cctv.json", "w", encoding="utf-8") as fp:
         json.dump({"updated": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "cams": out}, fp, ensure_ascii=False)
